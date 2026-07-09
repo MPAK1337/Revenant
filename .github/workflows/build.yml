@@ -96,6 +96,12 @@ jobs:
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
 
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          # Diagnostic: ImportCertificates.py imports the fake p12 with check_result=False,
+          # so a failed import is silent and later shows up only as "Unable to find an
+          # identity". Print what actually landed in the keychain so a signing failure is
+          # debuggable from the log without another build.
+          echo "=== codesigning identities visible after import ==="
+          security find-identity -v -p codesigning || true
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \

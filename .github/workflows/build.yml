@@ -97,6 +97,16 @@ jobs:
 
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
 
+          # The bundled fake cert is self-signed, so `security import` leaves the
+          # identity as CSSMERR_TP_NOT_TRUSTED and `find-identity -v -p codesigning`
+          # — exactly what rules_apple uses to pick a signing identity — reports
+          # "0 valid identities", surfacing 47 min later as "Unable to find an
+          # identity matching X.mobileprovision". Trust the self-signed cert as a
+          # root (system domain, needs sudo) so it becomes a valid signing identity.
+          sudo security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain \
+            build-system/fake-codesigning/certs/Public.cer
+
           # --- codesigning identity diagnostics + fail-fast -------------------
           # ImportCertificates.py imports the fake p12 with check_result=False, so a
           # rejected import is silent and only surfaces ~47 min later as "Unable to

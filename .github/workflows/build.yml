@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write   # needed for the softprops release step to upload the IPA
 
+# macOS runners are scarce and each build is ~1h; never let two builds of the same
+# ref queue against each other — a newer push cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-15          # macos-13 does NOT carry Xcode 26.2; 15 does
@@ -86,14 +92,14 @@ jobs:
             --configurationPath="build-system/appstore-configuration.json" \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=release_arm64 \
-            --buildNumber="$BUILD_NUMBER"
+            --buildNumber="$BUILD_NUMBER" \
+            --outputBuildArtifactsPath="$SOURCE_DIR/build/artifacts"
 
-          OUTPUT_PATH="build/artifacts"
-          rm -rf "$OUTPUT_PATH"; mkdir -p "$OUTPUT_PATH"
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
-            cp "$f" "$OUTPUT_PATH/"
-          done
-          ls -la "$OUTPUT_PATH"
+          # Make.py copies the built IPA (and DSYMs) into build/artifacts itself,
+          # resolving the IPA through the stable bazel-bin symlink and erroring out
+          # loudly if it is missing — far more reliable than globbing bazel-out/ for
+          # the opt/config mnemonic, which fails silently at the very end of a build.
+          ls -la "$SOURCE_DIR/build/artifacts"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4

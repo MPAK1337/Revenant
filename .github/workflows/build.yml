@@ -1,0 +1,112 @@
+name: CI
+
+# Unsigned build of the fork. The produced Telegram.ipa is signed only with a
+# throwaway self-signed cert (build-system/fake-codesigning) — i.e. effectively
+# unsigned. Re-sign it afterwards with your own Apple ID in ESign / AltStore /
+# Sideloadly before installing on a device.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for the softprops release step to upload the IPA
+
+jobs:
+  build:
+    runs-on: macos-15          # macos-13 does NOT carry Xcode 26.2; 15 does
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: '0'      # full history: build number = git rev-list --count
+
+      - name: Prepare toolchain and free disk
+        run: |
+          set -x
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          # Telegram-iOS is a huge build and hosted macOS runners ship little free space.
+          # Dropping the Xcodes and simulators we do not use is the single biggest win.
+          for app in /Applications/Xcode_*.app; do
+            case "$app" in
+              *_${XCODE_VERSION}.app) : ;;                 # keep the one we build with
+              *) sudo rm -rf "$app" || true ;;
+            esac
+          done
+          sudo xcode-select -s /Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer
+          xcrun simctl delete all || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          xcodebuild -version
+          df -h /
+
+      # Persist Bazel's output/cache between runs so a rebuild after a fix only
+      # recompiles what changed instead of the whole tree.
+      # NOTE: GitHub-hosted caches are capped at ~10GB/repo and Telegram's Bazel
+      # output is far larger, so this only partially helps here. For real fast
+      # iterative build-fix loops use a self-hosted Mac runner (persistent,
+      # warm, incremental) or a remote Bazel cache — see GHOSTGRAM_PLAN.md.
+      - name: Cache Bazel output
+        uses: actions/cache@v4
+        with:
+          path: /private/var/tmp/_bazel_containerhost
+          key: bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-${{ github.sha }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-
+            bazel-${{ runner.os }}-
+
+      - name: Create canonical source directory
+        run: |
+          set -x
+          # Source paths are baked into the binary, so build from a stable path.
+          sudo mkdir -p /Users/Shared
+          cp -R "$GITHUB_WORKSPACE" /Users/Shared/
+          mv "/Users/Shared/$(basename "$GITHUB_WORKSPACE")" /Users/Shared/telegram-ios
+
+      - name: Build the App (unsigned)
+        run: |
+          set -x
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
+          cd "$SOURCE_DIR"
+
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          export APP_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["app"])')
+          export COMMIT_COUNT=$(git rev-list --count HEAD)
+          export BUILD_NUMBER="$(($COMMIT_COUNT+$BUILD_NUMBER_OFFSET))"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath="build-system/appstore-configuration.json" \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+          OUTPUT_PATH="build/artifacts"
+          rm -rf "$OUTPUT_PATH"; mkdir -p "$OUTPUT_PATH"
+          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
+            cp "$f" "$OUTPUT_PATH/"
+          done
+          ls -la "$OUTPUT_PATH"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-${{ env.APP_VERSION }}-${{ env.BUILD_NUMBER }}
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD_NUMBER }}
+          name: ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
+          body: |
+            Unsigned build. Re-sign with your Apple ID in ESign / AltStore / Sideloadly, then install.
+          files: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa

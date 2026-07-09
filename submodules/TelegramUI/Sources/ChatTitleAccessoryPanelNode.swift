@@ -1,0 +1,4 @@
+import class LegacyChatHeaderPanelComponent.LegacyChatTitleAccessoryPanelNode
+
+class ChatTitleAccessoryPanelNode: LegacyChatTitleAccessoryPanelNode {
+}

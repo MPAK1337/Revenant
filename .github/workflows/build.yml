@@ -42,7 +42,17 @@ jobs:
               *) sudo rm -rf "$app" || true ;;
             esac
           done
-          sudo xcode-select -s /Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer
+          # Repoint the default /Applications/Xcode.app symlink at the Xcode we kept.
+          # The runner ships it pointing at the default (16.4); deleting that above
+          # leaves it dangling, and some third-party builds hardcode a sysroot of
+          # /Applications/Xcode.app/... (e.g. dav1d's device meson crossfile
+          # arm64-iPhoneOS.meson, which — unlike the simulator path — is used as-is
+          # with no xcode-select substitution). A dangling symlink there makes clang
+          # fail to find the SDK ("errno.h not found"). Repointing fixes the whole
+          # class of hardcoded-default-Xcode references at once.
+          sudo rm -rf /Applications/Xcode.app
+          sudo ln -s /Applications/Xcode_${XCODE_VERSION}.app /Applications/Xcode.app
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcrun simctl delete all || true
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
           xcodebuild -version

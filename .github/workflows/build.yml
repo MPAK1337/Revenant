@@ -96,12 +96,27 @@ jobs:
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
 
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
-          # Diagnostic: ImportCertificates.py imports the fake p12 with check_result=False,
-          # so a failed import is silent and later shows up only as "Unable to find an
-          # identity". Print what actually landed in the keychain so a signing failure is
-          # debuggable from the log without another build.
-          echo "=== codesigning identities visible after import ==="
+
+          # --- codesigning identity diagnostics + fail-fast -------------------
+          # ImportCertificates.py imports the fake p12 with check_result=False, so a
+          # rejected import is silent and only surfaces ~47 min later as "Unable to
+          # find an identity matching X.mobileprovision" at signing time. Dump the
+          # keychain state now and abort immediately if the fake identity is not a
+          # valid codesigning identity, so we learn it in minutes, not after a full
+          # compile.
+          echo "=== list-keychains ==="; security list-keychains || true
+          echo "=== find-identity -v -p codesigning (valid signing identities) ==="
           security find-identity -v -p codesigning || true
+          echo "=== find-identity -p codesigning (incl. invalid) ==="
+          security find-identity -p codesigning || true
+          echo "=== find-identity (all identities) ==="
+          security find-identity || true
+          if ! security find-identity -v -p codesigning | grep -q "Telegram FZ-LLC"; then
+            echo "::error::fake codesigning identity 'Telegram FZ-LLC' is not a valid codesigning identity after import — see keychain dump above"
+            exit 1
+          fi
+          echo "OK: fake codesigning identity present and valid"
+
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \
